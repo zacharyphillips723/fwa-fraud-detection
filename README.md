@@ -93,10 +93,14 @@ create catalogs) override `catalog`; otherwise keep the single-schema model and 
 
 ## Execution evidence
 
-`evidence/` contains committed, **text-readable** proof the build ran: pipeline row counts and
-sample rows, MLflow model metrics (AUC / PR / confusion matrix), a real multi-agent investigation
-trace (question → tool calls → answer), Genie NL→SQL→results, and app API responses. _(Populated
-after the first full run — see the FE Bar submission checklist.)_
+`evidence/` contains committed, **text-readable** proof the build ran end-to-end — captured live
+from a **fully-green job run (16/16 tasks SUCCESS)** on serverless (run `158024769379945`):
+
+- **[01_pipeline_and_data.md](evidence/01_pipeline_and_data.md)** — medallion row counts (417K medical claims, 143K pharmacy, 36K FWA signals, 1,488 providers scored) + governed gold samples
+- **[02_ml_model.md](evidence/02_ml_model.md)** — XGBoost fraud scorer: risk-tier distribution, top flagged claims, 139K scored
+- **[03_agent_and_genie.md](evidence/03_agent_and_genie.md)** — 24-case multi-agent evaluation, LLM-judged (llama-4-maverick + claude-haiku-4-5, judge claude-sonnet-4)
+- **[04_genie_nl2sql.md](evidence/04_genie_nl2sql.md)** — real NL question → Genie-generated SQL → live result
+- **[05_app_and_governance.md](evidence/05_app_and_governance.md)** — app running, Lakebase-backed, 5 PHI/PII column masks + row filter
 
 ---
 

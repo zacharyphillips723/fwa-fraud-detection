@@ -220,20 +220,28 @@ schema = StructType([
 
 chunks_df = spark.createDataFrame(chunks, schema)
 
-# Try to get service_category from existing policy metadata table
-try:
-    policy_meta = (
-        spark.table(f"{catalog}.fe_bar_fwa.bronze_medical_policy_rules")
-        .select("policy_id", "service_category")
-        .distinct()
-    )
-    chunks_df = (
-        chunks_df.drop("service_category")
-        .join(policy_meta, on="policy_id", how="left")
-    )
-    print("Enriched chunks with service_category from bronze_medical_policy_rules")
-except Exception as e:
-    print(f"Could not enrich service_category (will use empty): {e}")
+# Try to get service_category from a policy metadata table IF it exists.
+# NOTE: Spark Connect is lazy, so a missing-table error would otherwise escape
+# this block and surface at the saveAsTable() action below. Guard with an
+# explicit existence check. The medallion rules table is optional here — the
+# RAG index only needs the PDF chunk text; service_category is enrichment.
+_rules_table = f"{catalog}.fe_bar_fwa.bronze_medical_policy_rules"
+if spark.catalog.tableExists(_rules_table):
+    try:
+        policy_meta = (
+            spark.table(_rules_table)
+            .select("policy_id", "service_category")
+            .distinct()
+        )
+        chunks_df = (
+            chunks_df.drop("service_category")
+            .join(policy_meta, on="policy_id", how="left")
+        )
+        print(f"Enriched chunks with service_category from {_rules_table}")
+    except Exception as e:
+        print(f"Could not enrich service_category (will use empty): {e}")
+else:
+    print(f"{_rules_table} not present — skipping service_category enrichment (RAG uses chunk text only)")
 
 # Write to Delta with CDF enabled
 (chunks_df.write

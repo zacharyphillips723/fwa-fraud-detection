@@ -26,22 +26,11 @@ _ws_root = (
     else _nb_path.rsplit("/src/notebooks/", 1)[0]
 )
 
-# App name → source code subdirectory (relative to bundle root)
+# App name → source code subdirectory (relative to bundle root).
+# Standalone FWA build: a single app.
 APP_SOURCE_MAP = {
-    "red-bricks-command-center-app": "app",
-    "red-bricks-fwa-portal-app": "app-fwa",
-    "red-bricks-pa-portal-app": "app-prior-auth",
-    "red-bricks-denial-scrub-app": "app-provider-scrub",
-    "rb-network-adequacy-app": "app-network-adequacy",
+    "fwa-fraud-detection-portal": "app-fwa",
 }
-
-# Apps with target-suffix names — detect dynamically
-for app in w.apps.list():
-    name = app.name
-    if name.startswith("rb-grp-rpt-"):
-        APP_SOURCE_MAP[name] = "app-group-reporting"
-    elif name.startswith("rb-uw-sim-"):
-        APP_SOURCE_MAP[name] = "app-underwriting-sim"
 
 print(f"Bundle root: {_ws_root}")
 print(f"Apps to deploy: {list(APP_SOURCE_MAP.keys())}")

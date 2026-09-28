@@ -28,6 +28,11 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install databricks-feature-engineering xgboost shap --quiet
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
 dbutils.widgets.text("catalog", "red_bricks_insurance_catalog", "Catalog")
 
 catalog = dbutils.widgets.get("catalog")

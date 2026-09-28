@@ -127,28 +127,11 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
 
-        # --- Model monitoring (drift) — execution evidence ---
-        - task_key: seed_inference_tables
-          depends_on: [{ task_key: train_fwa_model }]
-          notebook_task:
-            notebook_path: ../src/notebooks/fwa_seed_inference_tables.py
-            base_parameters:
-              catalog: ${var.catalog}
-
-        - task_key: fwa_backfill_monitoring
-          depends_on: [{ task_key: seed_inference_tables }]
-          notebook_task:
-            notebook_path: ../src/notebooks/fwa_backfill_monitoring.py
-            base_parameters:
-              catalog: ${var.catalog}
-
-        - task_key: fwa_model_monitoring
-          depends_on: [{ task_key: fwa_backfill_monitoring }]
-          notebook_task:
-            notebook_path: ../src/notebooks/fwa_model_monitoring.py
-            base_parameters:
-              catalog: ${var.catalog}
-              warehouse_id: ${var.warehouse_id}
+        # NOTE: model-drift monitoring (fwa_seed_inference_tables → fwa_backfill_monitoring
+        # → fwa_model_monitoring) is intentionally NOT in this automated DAG. Those notebooks
+        # require a Model Serving endpoint created by hand + a ~1-hour inference-table
+        # materialization, so they are documented optional post-run steps, not part of the
+        # zero-intervention build. Model quality evidence comes from train_fwa_model's metrics.
 
         # --- Grants + Lakebase seed + OTel trace tables, then deploy the app ---
         - task_key: bootstrap_workspace
