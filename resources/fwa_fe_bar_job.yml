@@ -1,0 +1,174 @@
+# End-to-end FWA fraud-detection build — one serverless job, raw synthetic data → app.
+# DAG (depends_on): setup_lakebase + data_generation seed the workspace; the medallion
+# (providers/members/claims → fwa) feeds the XGBoost scorer; train runs BEFORE gold
+# analytics so the model-prediction tables exist when the gold MVs read them; the
+# multi-agent supervisor (Genie + RAG) deploys; governance/monitoring/eval produce
+# execution evidence; bootstrap grants + seeds Lakebase; the app is deployed last.
+resources:
+  jobs:
+    fwa_fraud_detection_demo:
+      name: "[${bundle.target}] FWA Fraud Detection — Full Build"
+      tags:
+        project: fwa-fraud-detection
+        domain: fwa
+
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "2"
+            dependencies:
+              - databricks-sdk
+
+      tasks:
+        # --- Foundations (no deps) ---
+        - task_key: setup_lakebase
+          notebook_task:
+            notebook_path: ../src/notebooks/setup_lakebase.py
+            base_parameters:
+              catalog: ${var.catalog}
+              lakebase_project_id: ${var.lakebase_project_id}
+
+        - task_key: data_generation
+          notebook_task:
+            notebook_path: ../src/notebooks/run_data_generation.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: setup_ai_gateway
+          notebook_task:
+            notebook_path: ../src/notebooks/setup_ai_gateway.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # --- Lakeflow medallion (SDP) ---
+        - task_key: providers_pipeline
+          depends_on: [{ task_key: data_generation }]
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.providers_pipeline.id}
+
+        - task_key: members_pipeline
+          depends_on: [{ task_key: data_generation }]
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.members_pipeline.id}
+
+        - task_key: claims_pipeline
+          depends_on: [{ task_key: data_generation }]
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.claims_pipeline.id}
+
+        - task_key: fwa_pipeline
+          depends_on:
+            - { task_key: providers_pipeline }
+            - { task_key: members_pipeline }
+            - { task_key: claims_pipeline }
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.fwa_pipeline.id}
+
+        # --- ML: XGBoost fraud scorer (writes fwa_ml_predictions + fwa_model_inference) ---
+        - task_key: train_fwa_model
+          depends_on: [{ task_key: fwa_pipeline }]
+          notebook_task:
+            notebook_path: ../src/notebooks/train_fwa_model.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # --- Gold analytics (reads the model-prediction tables → runs AFTER train) ---
+        - task_key: gold_analytics_pipeline
+          depends_on:
+            - { task_key: fwa_pipeline }
+            - { task_key: train_fwa_model }
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.gold_analytics_pipeline.id}
+
+        # --- Unity Catalog governance (masks / row filters / tags on the FWA schema) ---
+        - task_key: setup_uc_governance
+          depends_on: [{ task_key: gold_analytics_pipeline }]
+          notebook_task:
+            notebook_path: ../src/notebooks/setup_uc_governance.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # --- GenAI: medical-policy RAG index + Genie space + multi-agent supervisor ---
+        - task_key: setup_medical_policy_vs
+          depends_on: [{ task_key: data_generation }]
+          notebook_task:
+            notebook_path: ../src/notebooks/setup_medical_policy_vs.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: genie_fwa_setup
+          depends_on: [{ task_key: gold_analytics_pipeline }]
+          environment_key: serverless_env
+          spark_python_task:
+            python_file: ../config/genie_fwa_setup.py
+            parameters:
+              - ${var.catalog}
+
+        - task_key: deploy_fwa_supervisor_agent
+          depends_on:
+            - { task_key: train_fwa_model }
+            - { task_key: setup_medical_policy_vs }
+            - { task_key: setup_ai_gateway }
+            - { task_key: genie_fwa_setup }
+          notebook_task:
+            notebook_path: ../src/notebooks/deploy_fwa_supervisor_agent.py
+            base_parameters:
+              catalog: ${var.catalog}
+              warehouse_id: ${var.warehouse_id}
+              lakebase_project_id: ${var.lakebase_project_id}
+              genie_space_id: "auto"
+
+        - task_key: evaluate_fwa_agent
+          depends_on:
+            - { task_key: deploy_fwa_supervisor_agent }
+            - { task_key: setup_ai_gateway }
+          notebook_task:
+            notebook_path: ../src/notebooks/evaluate_fwa_agent.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # --- Model monitoring (drift) — execution evidence ---
+        - task_key: seed_inference_tables
+          depends_on: [{ task_key: train_fwa_model }]
+          notebook_task:
+            notebook_path: ../src/notebooks/fwa_seed_inference_tables.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: fwa_backfill_monitoring
+          depends_on: [{ task_key: seed_inference_tables }]
+          notebook_task:
+            notebook_path: ../src/notebooks/fwa_backfill_monitoring.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: fwa_model_monitoring
+          depends_on: [{ task_key: fwa_backfill_monitoring }]
+          notebook_task:
+            notebook_path: ../src/notebooks/fwa_model_monitoring.py
+            base_parameters:
+              catalog: ${var.catalog}
+              warehouse_id: ${var.warehouse_id}
+
+        # --- Grants + Lakebase seed + OTel trace tables, then deploy the app ---
+        - task_key: bootstrap_workspace
+          depends_on:
+            - { task_key: setup_lakebase }
+            - { task_key: fwa_pipeline }
+            - { task_key: train_fwa_model }
+            - { task_key: gold_analytics_pipeline }
+            - { task_key: deploy_fwa_supervisor_agent }
+            - { task_key: setup_medical_policy_vs }
+          notebook_task:
+            notebook_path: ../src/notebooks/bootstrap_workspace.py
+            base_parameters:
+              catalog: ${var.catalog}
+              warehouse_id: ${var.warehouse_id}
+              lakebase_project_id: ${var.lakebase_project_id}
+
+        - task_key: deploy_app_source
+          depends_on: [{ task_key: bootstrap_workspace }]
+          notebook_task:
+            notebook_path: ../src/notebooks/deploy_app_source.py
+            base_parameters:
+              catalog: ${var.catalog}

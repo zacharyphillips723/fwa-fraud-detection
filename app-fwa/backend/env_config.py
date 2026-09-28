@@ -1,0 +1,128 @@
+"""Runtime environment configuration with auto-detection.
+
+Config resolution order:
+  1. Env var set by DAB resource config (via `databricks bundle deploy`)
+  2. If env var is "auto" or empty → auto-detect via Databricks SDK
+  3. Hardcoded fallback if auto-detection fails
+"""
+
+import os
+import traceback
+
+from databricks.sdk import WorkspaceClient
+
+_SENTINEL = {"", "auto"}
+
+
+def _auto_detect_warehouse(w: WorkspaceClient) -> str:
+    try:
+        for wh in w.warehouses.list():
+            if wh.state and wh.state.value == "RUNNING":
+                print(f"[env_config] Auto-detected warehouse: {wh.id} ({wh.name})")
+                return wh.id
+        for wh in w.warehouses.list():
+            print(f"[env_config] Using warehouse (state={wh.state}): {wh.id} ({wh.name})")
+            return wh.id
+        print("[env_config] WARNING: No SQL warehouses found")
+    except Exception as e:
+        print(f"[env_config] Warehouse auto-detection failed: {e}")
+        traceback.print_exc()
+    return ""
+
+
+def _auto_detect_catalog(w: WorkspaceClient) -> str:
+    """Find the catalog that contains our target UC_SCHEMA."""
+    target_schema = os.environ.get("UC_SCHEMA", "fe_bar_fwa")
+    skip = {"system", "hive_metastore", "main", "samples", "__databricks_internal"}
+    try:
+        candidates = [
+            cat.name for cat in w.catalogs.list()
+            if (cat.name or "") not in skip
+        ]
+        # Prefer a catalog that actually contains the expected schema
+        for name in candidates:
+            try:
+                schemas = [s.name for s in w.schemas.list(catalog_name=name)]
+                if target_schema in schemas:
+                    print(f"[env_config] Auto-detected catalog: {name} (has schema '{target_schema}')")
+                    return name
+            except Exception:
+                continue
+        # Fallback: first non-system catalog
+        if candidates:
+            print(f"[env_config] Auto-detected catalog (fallback): {candidates[0]}")
+            return candidates[0]
+        return "main"
+    except Exception as e:
+        print(f"[env_config] Catalog auto-detection failed: {e}")
+        return "red_bricks_insurance"
+
+
+def _auto_detect_genie_space(w: WorkspaceClient, target_title: str = "") -> str:
+    """Find a Genie space by title, falling back to first available."""
+    try:
+        resp = w.api_client.do("GET", "/api/2.0/genie/spaces")
+        spaces = resp.get("spaces", [])
+        if target_title:
+            for s in spaces:
+                if s.get("title") == target_title:
+                    print(f"[env_config] Auto-detected Genie space by title: {s['space_id']} ({target_title})")
+                    return s["space_id"]
+            print(f"[env_config] WARNING: No Genie space with title '{target_title}' found")
+        if spaces:
+            space = spaces[0]
+            print(f"[env_config] Auto-detected Genie space (fallback): {space['space_id']} ({space.get('title', '')})")
+            return space["space_id"]
+        print("[env_config] WARNING: No Genie spaces found")
+    except Exception as e:
+        print(f"[env_config] Genie space auto-detection failed: {e}")
+    return ""
+
+
+_w = WorkspaceClient()
+
+_wh = os.environ.get("SQL_WAREHOUSE_ID", "")
+SQL_WAREHOUSE_ID = _wh if _wh not in _SENTINEL else _auto_detect_warehouse(_w)
+
+_cat = os.environ.get("UC_CATALOG", "")
+UC_CATALOG = _cat if _cat not in _SENTINEL else _auto_detect_catalog(_w)
+
+_genie = os.environ.get("GENIE_SPACE_ID", "")
+GENIE_SPACE_ID = _genie if _genie not in _SENTINEL else _auto_detect_genie_space(
+    _w, target_title="Red Bricks Insurance — FWA Analytics"
+)
+
+LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT") or "databricks-llama-4-maverick"
+# The clinical-analyst sub-agent endpoint. Name is retained as GEMINI_ENDPOINT
+# for compatibility, but now points at Claude Haiku 4.5 — the prior
+# databricks-gemini-2-5-flash endpoint was deprecated. Overridable via env.
+GEMINI_ENDPOINT = os.environ.get("GEMINI_ENDPOINT") or "databricks-claude-haiku-4-5"
+FWA_MODEL_ENDPOINT = os.environ.get("FWA_MODEL_ENDPOINT") or "fwa-fraud-scorer"
+
+VS_INDEX_NAME = os.environ.get("VS_INDEX_NAME", f"{UC_CATALOG}.fe_bar_fwa.medical_policy_vs_index")
+GATEWAY_MODELS = os.environ.get("GATEWAY_MODELS", f"{LLM_ENDPOINT},{GEMINI_ENDPOINT}").split(",")
+
+# MLflow UC trace storage — the app links its experiment to these UC OTel tables
+# so agent traces (supervisor + genie + gemini) stream into Unity Catalog in
+# real-time. Tables are named `{UC_TRACE_TABLE_PREFIX}_otel_spans`, etc., in
+# `{UC_CATALOG}.{UC_TRACE_SCHEMA}`. Provisioned by bootstrap_workspace.py; the
+# app performs an idempotent re-link on startup. The experiment name must be a
+# fresh one that has never had legacy trace-storage tags set on it (a polluted
+# experiment causes set_experiment to skip table provisioning).
+UC_TRACE_SCHEMA = os.environ.get("UC_TRACE_SCHEMA", "analytics")
+UC_TRACE_TABLE_PREFIX = os.environ.get("UC_TRACE_TABLE_PREFIX", "fwa_agent")
+MLFLOW_UC_EXPERIMENT = os.environ.get(
+    "MLFLOW_UC_EXPERIMENT", "/Shared/red-bricks-fwa-agent-traces-uc2"
+)
+
+print(f"[env_config] SQL_WAREHOUSE_ID={SQL_WAREHOUSE_ID}")
+print(f"[env_config] UC_CATALOG={UC_CATALOG}")
+print(f"[env_config] GENIE_SPACE_ID={GENIE_SPACE_ID}")
+print(f"[env_config] LLM_ENDPOINT={LLM_ENDPOINT}")
+print(f"[env_config] GEMINI_ENDPOINT={GEMINI_ENDPOINT}")
+print(f"[env_config] FWA_MODEL_ENDPOINT={FWA_MODEL_ENDPOINT}")
+print(f"[env_config] VS_INDEX_NAME={VS_INDEX_NAME}")
+print(f"[env_config] GATEWAY_MODELS={GATEWAY_MODELS}")
+print(f"[env_config] UC_TRACE_SCHEMA={UC_TRACE_SCHEMA}")
+print(f"[env_config] UC_TRACE_TABLE_PREFIX={UC_TRACE_TABLE_PREFIX}")
+print(f"[env_config] MLFLOW_UC_EXPERIMENT={MLFLOW_UC_EXPERIMENT}")

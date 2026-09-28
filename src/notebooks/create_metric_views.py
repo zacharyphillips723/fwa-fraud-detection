@@ -1,0 +1,554 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Red Bricks Insurance — Unity Catalog Metric Views
+# MAGIC
+# MAGIC Creates **metric views** as a governed semantic layer on top of existing gold tables.
+# MAGIC Metric views define measures and dimensions as YAML, queried with the `MEASURE()` function.
+# MAGIC They ensure every consumer — actuaries, dashboards, Genie, AI/BI — computes metrics
+# MAGIC the same way.
+# MAGIC
+# MAGIC **Why a notebook instead of SDP SQL?** Metric views are standalone UC objects
+# MAGIC (`CREATE VIEW ... WITH METRICS`), not SDP constructs. They can't be defined inside
+# MAGIC an SDP pipeline alongside `CREATE OR REFRESH MATERIALIZED VIEW`.
+# MAGIC
+# MAGIC **Requires:** Databricks Runtime 17.2+ or a SQL Warehouse.
+
+# COMMAND ----------
+
+dbutils.widgets.text("catalog", "red_bricks_insurance_catalog", "Catalog")
+
+catalog = dbutils.widgets.get("catalog")
+catalog_sql = f"`{catalog}`"  # SQL-safe quoting (handles hyphens in catalog names)
+
+# Domain schema constants
+ANALYTICS_SCHEMA = "fe_bar_fwa"
+MEMBERS_SCHEMA = "fe_bar_fwa"
+
+# YAML block delimiter — injected as variable to prevent Databricks notebook
+# parameter substitution from collapsing $$ to $
+DD = "$$"
+
+print(f"Creating metric views in: {catalog}.{ANALYTICS_SCHEMA}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_financial_overview
+# MAGIC Core financial KPIs: PMPM (paid/allowed), total paid/allowed, member months.
+# MAGIC Source: `gold_pmpm`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_financial_overview
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed financial KPIs — PMPM paid/allowed, total paid/allowed, member months. Source of truth for cost metrics across all consumers."
+  source: '{catalog_sql}.{ANALYTICS_SCHEMA}.gold_pmpm'
+  dimensions:
+    - name: line_of_business
+      expr: line_of_business
+    - name: service_year_month
+      expr: service_year_month
+  measures:
+    - name: Total Paid
+      expr: SUM(total_paid)
+      comment: "Total paid claims amount"
+    - name: Total Allowed
+      expr: SUM(total_allowed)
+      comment: "Total allowed claims amount"
+    - name: PMPM Paid
+      expr: SUM(total_paid) / NULLIF(SUM(member_months), 0)
+      comment: "Per Member Per Month paid cost"
+    - name: PMPM Allowed
+      expr: SUM(total_allowed) / NULLIF(SUM(member_months), 0)
+      comment: "Per Member Per Month allowed cost"
+    - name: Member Months
+      expr: SUM(member_months)
+      comment: "Total member months of coverage exposure"
+{DD}
+""")
+
+print("✓ mv_financial_overview created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_mlr_compliance
+# MAGIC Medical Loss Ratio with ACA compliance tracking.
+# MAGIC Source: `gold_mlr`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_mlr_compliance
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed MLR and admin ratio metrics with ACA compliance context."
+  source: '{catalog_sql}.{ANALYTICS_SCHEMA}.gold_mlr'
+  dimensions:
+    - name: line_of_business
+      expr: line_of_business
+    - name: service_year
+      expr: service_year
+  measures:
+    - name: MLR
+      expr: SUM(total_claims_paid) / NULLIF(SUM(total_premiums), 0)
+      comment: "Medical Loss Ratio — ACA target >=80pct Commercial/ACA, >=85pct MA/Medicaid"
+    - name: Total Claims Paid
+      expr: SUM(total_claims_paid)
+      comment: "Total medical + pharmacy claims paid"
+    - name: Total Premiums
+      expr: SUM(total_premiums)
+      comment: "Total premium revenue collected"
+    - name: Medical Claims
+      expr: SUM(medical_claims_paid)
+      comment: "Medical claims paid (excludes pharmacy)"
+    - name: Pharmacy Claims
+      expr: SUM(pharmacy_claims_paid)
+      comment: "Pharmacy claims paid"
+    - name: Admin Ratio
+      expr: (SUM(total_premiums) - SUM(total_claims_paid)) / NULLIF(SUM(total_premiums), 0)
+      comment: "Administrative cost ratio — proportion of premiums not paid out as claims"
+{DD}
+""")
+
+print("✓ mv_mlr_compliance created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_utilization
+# MAGIC Utilization rate metrics per 1,000 member months.
+# MAGIC Source: `gold_utilization_per_1000`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_utilization
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed utilization benchmarks per 1,000 member months — standard actuarial rates for cross-LOB comparison."
+  source: '{catalog_sql}.{ANALYTICS_SCHEMA}.gold_utilization_per_1000'
+  dimensions:
+    - name: line_of_business
+      expr: line_of_business
+    - name: service_year
+      expr: service_year
+    - name: service_category
+      expr: service_category
+  measures:
+    - name: Claims per 1000
+      expr: SUM(total_claims) * 1000.0 / NULLIF(SUM(member_months), 0)
+      comment: "Claims volume per 1,000 member months"
+    - name: Patients per 1000
+      expr: SUM(unique_patients) * 1000.0 / NULLIF(SUM(member_months), 0)
+      comment: "Unique patients per 1,000 member months (prevalence)"
+    - name: Cost per 1000
+      expr: SUM(total_paid) * 1000.0 / NULLIF(SUM(member_months), 0)
+      comment: "Total paid cost per 1,000 member months"
+    - name: Admits per 1000
+      expr: SUM(ip_admits) FILTER (WHERE service_category = 'Inpatient') * 1000.0 / NULLIF(SUM(member_months), 0)
+      comment: "Inpatient admissions per 1,000 member months"
+    - name: Avg Cost per Claim
+      expr: SUM(total_paid) / NULLIF(SUM(total_claims), 0)
+      comment: "Average cost per claim across service categories"
+    - name: Total Claims
+      expr: SUM(total_claims)
+      comment: "Total claim count"
+    - name: Member Months
+      expr: SUM(member_months)
+      comment: "Total member months of coverage exposure"
+{DD}
+""")
+
+print("✓ mv_utilization created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_enrollment
+# MAGIC Enrollment exposure metrics.
+# MAGIC Source: `silver_member_months`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_enrollment
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed enrollment exposure metrics — member months, active members, premium revenue, and risk scores."
+  source: '{catalog_sql}.{MEMBERS_SCHEMA}.silver_member_months'
+  dimensions:
+    - name: line_of_business
+      expr: line_of_business
+    - name: plan_type
+      expr: plan_type
+    - name: eligibility_year
+      expr: eligibility_year
+    - name: eligibility_month
+      expr: eligibility_month
+  measures:
+    - name: Member Months
+      expr: COUNT(*)
+      comment: "Total member months of coverage (one row = one member-month)"
+    - name: Active Members
+      expr: COUNT(DISTINCT member_id)
+      comment: "Distinct active members"
+    - name: Avg Premium
+      expr: AVG(monthly_premium)
+      comment: "Average monthly premium per member-month"
+    - name: Premium Revenue
+      expr: SUM(monthly_premium)
+      comment: "Total premium revenue"
+    - name: Avg Risk Score
+      expr: AVG(risk_score)
+      comment: "Average member risk score (higher = sicker population)"
+{DD}
+""")
+
+print("✓ mv_enrollment created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_ibnr
+# MAGIC IBNR reserve indicators — payment lag and completion rates.
+# MAGIC Source: `gold_ibnr_estimate`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_ibnr
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed IBNR reserve indicators — payment lag, completion rates, and outstanding claims beyond 90 days."
+  source: '{catalog_sql}.{ANALYTICS_SCHEMA}.gold_ibnr_estimate'
+  dimensions:
+    - name: service_year_month
+      expr: service_year_month
+  measures:
+    - name: Avg Payment Lag Days
+      expr: AVG(avg_lag_days)
+      comment: "Average days between service date and payment date"
+    - name: Completion Rate
+      expr: SUM(claims_under_30_days + claims_30_to_90) * 1.0 / NULLIF(SUM(total_claims), 0)
+      comment: "Proportion of claims settled within 90 days"
+    - name: Claims Over 90 Days Pct
+      expr: SUM(claims_90_to_180 + claims_over_180) * 1.0 / NULLIF(SUM(total_claims), 0)
+      comment: "Proportion of claims still outstanding beyond 90 days — higher means greater reserve need"
+    - name: Total Claims
+      expr: SUM(total_claims)
+      comment: "Total claim count for the service period"
+{DD}
+""")
+
+print("✓ mv_ibnr created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_denials
+# MAGIC Denial financial impact metrics.
+# MAGIC Source: `gold_denial_analysis`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_denials
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed denial financial impact — denial counts, denied amounts, and averages by AI-classified category."
+  source: '{catalog_sql}.{ANALYTICS_SCHEMA}.gold_denial_analysis'
+  dimensions:
+    - name: denial_category
+      expr: denial_category
+    - name: line_of_business
+      expr: line_of_business
+    - name: claim_type
+      expr: claim_type
+  measures:
+    - name: Denial Count
+      expr: SUM(denial_count)
+      comment: "Total number of denied claims"
+    - name: Total Denied Amount
+      expr: SUM(total_denied_amount)
+      comment: "Total dollar amount of denied claims"
+    - name: Avg Denied Amount
+      expr: SUM(total_denied_amount) / NULLIF(SUM(denial_count), 0)
+      comment: "Average denied amount per denial"
+{DD}
+""")
+
+print("✓ mv_denials created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_denial_prevention
+# MAGIC Provider denial-prevention program metrics: first-pass denial rate, preventable
+# MAGIC denied dollars (missing_info/no_auth/coding_mismatch/frequency_limit), and average
+# MAGIC model denial propensity — the governed KPIs behind the Claim Scrubber.
+# MAGIC Source: `fe_bar_fwa.gold_denial_prevention`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_denial_prevention
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed denial-prevention KPIs — first-pass denial rate, preventable denied dollars, and average denial propensity by LOB / reason / month. Powers the Claim Scrubber program view for Genie and AI/BI."
+  source: '{catalog_sql}.fe_bar_fwa.gold_denial_prevention'
+  dimensions:
+    - name: line_of_business
+      expr: line_of_business
+    - name: reason_category
+      expr: reason_category
+    - name: service_year_month
+      expr: service_year_month
+  measures:
+    - name: Claim Count
+      expr: SUM(claim_count)
+      comment: "Total claims"
+    - name: Denial Count
+      expr: SUM(denied_count)
+      comment: "Total denied claims"
+    - name: First-Pass Denial Rate
+      expr: SUM(denied_count) / NULLIF(SUM(claim_count), 0)
+      comment: "Share of claims denied on first submission"
+    - name: Denied Amount
+      expr: SUM(denied_amount)
+      comment: "Total billed amount on denied claims"
+    - name: Preventable Denied $
+      expr: SUM(preventable_denied_amount)
+      comment: "Denied dollars in provider-preventable categories (missing info, no auth, coding, frequency)"
+    - name: Preventable Share
+      expr: SUM(preventable_denied_amount) / NULLIF(SUM(denied_amount), 0)
+      comment: "Fraction of denied dollars that were preventable pre-submission"
+    - name: Avg Denial Propensity
+      expr: SUM(sum_denial_propensity) / NULLIF(SUM(scored_claim_count), 0)
+      comment: "Model-estimated average denial probability across scored claims"
+{DD}
+""")
+
+print("✓ mv_denial_prevention created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_cost_of_care
+# MAGIC Total Cost of Care and Total Cost Index for population health benchmarking.
+# MAGIC Source: `gold_member_tcoc`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_cost_of_care
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed Total Cost of Care (TCOC) and Total Cost Index (TCI) metrics. TCOC normalizes cost for risk acuity; TCI benchmarks members against LOB averages."
+  source: '{catalog_sql}.{ANALYTICS_SCHEMA}.gold_member_tcoc'
+  dimensions:
+    - name: line_of_business
+      expr: line_of_business
+    - name: cost_tier
+      expr: cost_tier
+    - name: is_high_risk
+      expr: is_high_risk
+  measures:
+    - name: Avg TCOC
+      expr: AVG(tcoc)
+      comment: "Average Total Cost of Care — risk-adjusted paid amount per member month"
+    - name: Avg TCI
+      expr: AVG(tci)
+      comment: "Average Total Cost Index — 1.0 = expected for LOB, >1.0 = above expected"
+    - name: Avg Actual PMPM
+      expr: AVG(actual_pmpm)
+      comment: "Average actual (unadjusted) per member per month cost"
+    - name: Total Paid
+      expr: SUM(total_paid)
+      comment: "Total paid claims (medical + pharmacy)"
+    - name: Total Members
+      expr: COUNT(DISTINCT member_id)
+      comment: "Distinct member count"
+    - name: Total Member Months
+      expr: SUM(member_months)
+      comment: "Total member months of exposure"
+    - name: Avg RAF Score
+      expr: AVG(raf_score)
+      comment: "Average Risk Adjustment Factor score"
+    - name: High Cost Members
+      expr: COUNT(DISTINCT member_id) FILTER (WHERE cost_tier IN ('Extreme Outlier', 'High Cost'))
+      comment: "Members with TCI >= 2.0 — candidates for care management outreach"
+{DD}
+""")
+
+print("✓ mv_cost_of_care created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Verification
+# MAGIC List all metric views and run sample `MEASURE()` queries.
+
+# COMMAND ----------
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## mv_fwa_risk
+# MAGIC FWA risk metrics: signal counts, estimated overpayment, fraud scores, severity.
+# MAGIC Source: `gold_fwa_summary`
+
+# COMMAND ----------
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {catalog_sql}.{ANALYTICS_SCHEMA}.mv_fwa_risk
+WITH METRICS
+LANGUAGE YAML
+AS {DD}
+  version: 1.1
+  comment: "Governed FWA risk metrics — signal counts, estimated overpayment, average fraud scores, and severity distribution by fraud type and LOB."
+  source: '{catalog_sql}.fe_bar_fwa.gold_fwa_summary'
+  dimensions:
+    - name: fraud_type
+      expr: fraud_type
+    - name: severity
+      expr: severity
+    - name: line_of_business
+      expr: line_of_business
+    - name: detection_method
+      expr: detection_method
+    - name: service_year_month
+      expr: service_year_month
+  measures:
+    - name: Signal Count
+      expr: SUM(signal_count)
+      comment: "Total FWA signals detected"
+    - name: Estimated Overpayment
+      expr: SUM(total_estimated_overpayment)
+      comment: "Total estimated overpayment across all flagged claims"
+    - name: Avg Fraud Score
+      expr: SUM(total_estimated_overpayment * avg_fraud_score) / NULLIF(SUM(total_estimated_overpayment), 0)
+      comment: "Weighted average fraud score (weighted by overpayment)"
+    - name: High Severity Signals
+      expr: SUM(signal_count) FILTER (WHERE severity IN ('Critical', 'High'))
+      comment: "Count of Critical and High severity signals"
+    - name: Distinct Providers
+      expr: SUM(distinct_providers)
+      comment: "Distinct providers with FWA signals"
+    - name: Distinct Members
+      expr: SUM(distinct_members)
+      comment: "Distinct members with FWA signals"
+    - name: Overpayment Ratio
+      expr: SUM(total_estimated_overpayment) / NULLIF(SUM(total_paid_amount), 0)
+      comment: "Estimated overpayment as percentage of total paid — higher means more waste"
+{DD}
+""")
+
+print("✓ mv_fwa_risk created")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Verification
+# MAGIC List all metric views and run sample `MEASURE()` queries.
+
+# COMMAND ----------
+
+print("=" * 60)
+print("Metric Views Created")
+print("=" * 60)
+
+metric_views = ["mv_financial_overview", "mv_mlr_compliance", "mv_utilization",
+                "mv_enrollment", "mv_ibnr", "mv_denials", "mv_cost_of_care", "mv_fwa_risk"]
+
+for mv in metric_views:
+    try:
+        cols = spark.sql(f"DESCRIBE {catalog_sql}.{ANALYTICS_SCHEMA}.{mv}").collect()
+        print(f"\n✓ {mv} — {len(cols)} columns")
+    except Exception as e:
+        print(f"\n✗ {mv} — ERROR: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Sample MEASURE() Queries
+
+# COMMAND ----------
+
+# PMPM by line of business
+print("PMPM by Line of Business:")
+display(spark.sql(f"""
+    SELECT `line_of_business`, MEASURE(`PMPM Paid`) AS pmpm_paid, MEASURE(`Member Months`) AS member_months
+    FROM {catalog_sql}.{ANALYTICS_SCHEMA}.mv_financial_overview
+    GROUP BY `line_of_business`
+    ORDER BY pmpm_paid DESC
+"""))
+
+# COMMAND ----------
+
+# MLR compliance by LOB
+print("MLR by Line of Business:")
+display(spark.sql(f"""
+    SELECT `line_of_business`, `service_year`, MEASURE(`MLR`) AS mlr, MEASURE(`Admin Ratio`) AS admin_ratio
+    FROM {catalog_sql}.{ANALYTICS_SCHEMA}.mv_mlr_compliance
+    GROUP BY `line_of_business`, `service_year`
+    ORDER BY `service_year` DESC, mlr DESC
+"""))
+
+# COMMAND ----------
+
+# Utilization per 1,000 by service category
+print("Utilization per 1,000 by Service Category:")
+display(spark.sql(f"""
+    SELECT `service_category`, `line_of_business`,
+           MEASURE(`Claims per 1000`) AS claims_per_1000,
+           MEASURE(`Cost per 1000`) AS cost_per_1000
+    FROM {catalog_sql}.{ANALYTICS_SCHEMA}.mv_utilization
+    GROUP BY `service_category`, `line_of_business`
+    ORDER BY cost_per_1000 DESC
+"""))
+
+# COMMAND ----------
+
+# Enrollment summary
+print("Enrollment by LOB:")
+display(spark.sql(f"""
+    SELECT `line_of_business`, MEASURE(`Member Months`) AS member_months,
+           MEASURE(`Active Members`) AS active_members, MEASURE(`Premium Revenue`) AS premium_revenue
+    FROM {catalog_sql}.{ANALYTICS_SCHEMA}.mv_enrollment
+    GROUP BY `line_of_business`
+    ORDER BY member_months DESC
+"""))
+
+# COMMAND ----------
+
+# Total Cost of Care by LOB and cost tier
+print("Total Cost of Care by LOB:")
+display(spark.sql(f"""
+    SELECT `line_of_business`, `cost_tier`,
+           MEASURE(`Avg TCOC`) AS avg_tcoc,
+           MEASURE(`Avg TCI`) AS avg_tci,
+           MEASURE(`Total Members`) AS members,
+           MEASURE(`Avg RAF Score`) AS avg_raf
+    FROM {catalog_sql}.{ANALYTICS_SCHEMA}.mv_cost_of_care
+    GROUP BY `line_of_business`, `cost_tier`
+    ORDER BY avg_tci DESC
+"""))

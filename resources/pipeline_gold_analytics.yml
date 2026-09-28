@@ -1,0 +1,15 @@
+resources:
+  pipelines:
+    gold_analytics_pipeline:
+      name: "[${bundle.target}] FWA — Gold Analytics Pipeline"
+      catalog: ${var.catalog}
+      target: ${var.schema}
+      configuration:
+        source_volume: ${var.source_volume}
+        catalog: ${var.catalog}
+      libraries:
+        - file:
+            path: ../src/pipelines/gold_analytics/fwa_analytics.sql
+      channel: PREVIEW
+      serverless: true
+      development: true

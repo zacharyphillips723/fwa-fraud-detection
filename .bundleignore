@@ -1,0 +1,67 @@
+# Exclude Python bytecode caches from bundle upload
+**/__pycache__/
+
+# Shared backend library — canonical source only, synced to each app at build time
+lib/
+
+# Exclude frontend source and node_modules — pre-built static assets are in app/static/
+app/frontend/node_modules/
+app/frontend/src/
+app/frontend/*.json
+app/frontend/*.ts
+app/frontend/*.js
+app/frontend/*.html
+
+# Exclude group reporting frontend source/node_modules — pre-built assets in app-group-reporting/static/
+app-group-reporting/frontend/node_modules/
+app-group-reporting/frontend/dist/
+app-group-reporting/frontend/src/
+app-group-reporting/frontend/*.json
+app-group-reporting/frontend/*.ts
+app-group-reporting/frontend/*.js
+app-group-reporting/frontend/*.html
+
+# Exclude FWA app frontend source/node_modules — pre-built assets in app-fwa/static/
+app-fwa/frontend/node_modules/
+app-fwa/frontend/dist/
+app-fwa/frontend/src/
+app-fwa/frontend/*.json
+app-fwa/frontend/*.ts
+app-fwa/frontend/*.js
+app-fwa/frontend/*.html
+
+# Exclude UW Simulation frontend source/node_modules — pre-built assets in app-underwriting-sim/static/
+app-underwriting-sim/frontend/node_modules/
+app-underwriting-sim/frontend/dist/
+app-underwriting-sim/frontend/src/
+app-underwriting-sim/frontend/*.json
+app-underwriting-sim/frontend/*.ts
+app-underwriting-sim/frontend/*.js
+app-underwriting-sim/frontend/*.html
+
+# Exclude Network Adequacy frontend source/node_modules — pre-built assets in app-network-adequacy/static/
+app-network-adequacy/frontend/node_modules/
+app-network-adequacy/frontend/dist/
+app-network-adequacy/frontend/src/
+app-network-adequacy/frontend/*.json
+app-network-adequacy/frontend/*.ts
+app-network-adequacy/frontend/*.js
+app-network-adequacy/frontend/*.html
+
+# Exclude Prior Auth frontend source/node_modules — pre-built assets in app-prior-auth/static/
+app-prior-auth/frontend/node_modules/
+app-prior-auth/frontend/dist/
+app-prior-auth/frontend/src/
+app-prior-auth/frontend/*.json
+app-prior-auth/frontend/*.ts
+app-prior-auth/frontend/*.js
+app-prior-auth/frontend/*.html
+
+# Exclude Provider Claim Scrubber frontend source/node_modules — pre-built assets in app-provider-scrub/static/
+app-provider-scrub/frontend/node_modules/
+app-provider-scrub/frontend/dist/
+app-provider-scrub/frontend/src/
+app-provider-scrub/frontend/*.json
+app-provider-scrub/frontend/*.ts
+app-provider-scrub/frontend/*.js
+app-provider-scrub/frontend/*.html

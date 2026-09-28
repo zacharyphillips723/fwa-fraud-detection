@@ -1,0 +1,72 @@
+resources:
+  apps:
+    red_bricks_fwa_portal:
+      name: "fwa-fraud-detection-portal"
+      description: "FWA Fraud Detection — Investigation Portal"
+      source_code_path: ../app-fwa
+      config:
+        command:
+          - uvicorn
+          - main:app
+          - --host=0.0.0.0
+          - --port=8000
+        env:
+          # in-process supervisor so the full span tree (supervisor -> genie +
+          # gemini -> tools) is captured in this app's UC OTel trace tables.
+          - name: AGENT_MODE
+            value: local
+          - name: FWA_AGENT_ENDPOINT
+            value: fwa-supervisor-agent
+          - name: LAKEBASE_PROJECT_ID
+            value: ${var.lakebase_project_id}
+          - name: LAKEBASE_DATABASE_NAME
+            value: fwa_cases
+          - name: LAKEBASE_BRANCH
+            value: production
+          - name: GENIE_SPACE_ID
+            value: auto
+          - name: SQL_WAREHOUSE_ID
+            value: ${var.warehouse_id}
+          - name: LLM_ENDPOINT
+            value: databricks-llama-4-maverick
+          - name: GEMINI_ENDPOINT
+            value: databricks-claude-haiku-4-5
+          - name: UC_CATALOG
+            value: ${var.catalog}
+          - name: UC_SCHEMA
+            value: fe_bar_fwa
+          - name: FWA_MODEL_ENDPOINT
+            value: fwa-fraud-scorer
+          - name: VS_INDEX_NAME
+            value: ${var.catalog}.fe_bar_fwa.medical_policy_vs_index
+          - name: GATEWAY_MODELS
+            value: databricks-llama-4-maverick,databricks-claude-haiku-4-5
+          - name: MLFLOW_TRACKING_URI
+            value: databricks
+          - name: MLFLOW_EXPERIMENT_NAME
+            value: /Shared/red-bricks-fwa-agent-traces
+          # UC trace storage — agent traces stream into these OTel tables in
+          # real-time. Must match bootstrap_workspace.py provisioning. The
+          # experiment name must be a FRESH name that never had legacy
+          # trace-storage tags (a polluted experiment silently skips table
+          # creation). See backend/env_config.py for details.
+          - name: MLFLOW_UC_EXPERIMENT
+            value: /Shared/red-bricks-fwa-agent-traces-uc2
+          - name: UC_TRACE_SCHEMA
+            value: fe_bar_fwa
+          - name: UC_TRACE_TABLE_PREFIX
+            value: fwa_agent
+      resources:
+        # NOTE: fwa-supervisor-agent is NOT listed here because it doesn't exist
+        # at deploy time — it's created by the deploy_fwa_agent job task.
+        # The app SP gets CAN_QUERY via bootstrap_workspace.py at runtime instead.
+        - name: llm-endpoint
+          serving_endpoint:
+            name: databricks-llama-4-maverick
+            permission: CAN_QUERY
+        - name: gemini-endpoint
+          serving_endpoint:
+            name: databricks-claude-haiku-4-5
+            permission: CAN_QUERY
+        # fwa-fraud-scorer serving endpoint is created at runtime by train_fwa_model task.
+        # Lakebase — SP access granted by bootstrap script (DAB doesn't support Autoscaling resource blocks yet)

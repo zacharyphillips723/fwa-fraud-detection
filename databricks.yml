@@ -1,0 +1,48 @@
+# FWA Fraud Detection — standalone FE Bar build.
+# End-to-end health-insurer FWA (Fraud/Waste/Abuse) detection: synthetic claims →
+# Lakeflow SDP medallion → Unity Catalog governance → Lakebase operational serving →
+# XGBoost fraud scorer + multi-agent investigation assistant → Genie → Databricks App.
+#
+# Extracted (Lakebase intact) from the red-bricks-insurance demo. Consolidated into a
+# SINGLE Unity Catalog schema (var.schema) inside the shared FEVM testing-playground
+# catalog, because catalog creation is not permitted in FEVM workspaces.
+bundle:
+  name: fwa-fraud-detection
+
+variables:
+  catalog:
+    description: Unity Catalog (shared FEVM testing-playground catalog — no catalog-create rights)
+    default: testing_playground_catalog
+  schema:
+    description: Single consolidated schema holding all FWA tables, volume, model, and agent traces
+    default: fe_bar_fwa
+  source_volume:
+    description: Volume path for raw generated source files (parquet + medical-policy PDFs)
+    default: /Volumes/${var.catalog}/${var.schema}/raw_sources
+  warehouse_id:
+    description: Serverless SQL warehouse for the app, Genie, and agent
+    lookup:
+      warehouse: "Serverless Starter Warehouse"
+  lakebase_project_id:
+    description: Lakebase Autoscaling project ID for operational investigation state
+    default: fwa-fraud-detection
+  num_members:
+    description: Number of synthetic members to generate (1000 quick, 5000 full)
+    default: "5000"
+
+sync:
+  exclude:
+    - "**/node_modules/**"
+
+include:
+  - resources/*.yml
+
+targets:
+  fe-bar:
+    mode: development
+    default: true
+    workspace:
+      profile: fevm-testing-playground
+    variables:
+      catalog: testing_playground_catalog
+      schema: fe_bar_fwa
