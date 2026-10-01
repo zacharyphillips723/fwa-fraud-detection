@@ -10,6 +10,53 @@ across Lakeflow, Unity Catalog, Lakebase, ML + GenAI, Genie, and Databricks Apps
 
 ---
 
+## For the reviewer — proof it ran, how it was built, where the code is
+
+**It ran end to end.** The Databricks job `fwa_fraud_detection_demo` completed **16/16 tasks SUCCESS**
+(run `158024769379945`, serverless, zero manual steps). Full task log + model metrics:
+[`evidence/00_job_run.md`](evidence/00_job_run.md). All proof is committed as **readable text** in
+[`evidence/`](evidence/) — not screenshots.
+
+**How it was built** — AI tools, model/prompt choices, and honest trade-offs:
+[**`BUILD.md`**](BUILD.md).
+
+### Proof it ran (inline — pulled live from the run)
+
+| Stage | Evidence | Result |
+|---|---|---|
+| Lakeflow | [row counts](evidence/01_pipeline_and_data.md) | 417,489 medical + 142,776 pharmacy claims; 36,015 FWA signals; 1,488 providers risk-ranked |
+| ML | [model output](evidence/02_ml_model.md) + [MLflow metrics](evidence/00_job_run.md) | 139,158 claims scored; train AUC 0.703 / recall 0.690 (honest: synthetic labels → high-recall triage, see BUILD.md) |
+| GenAI | [agent evaluation](evidence/03_agent_and_genie.md) | 24-case FWA classification, LLM-judged (llama-4-maverick + claude-haiku-4-5, judge claude-sonnet-4) |
+| Genie | [NL→SQL transcript](evidence/04_genie_nl2sql.md) | real question → generated SQL (`RANK() OVER …`) → 6 live rows |
+| App + UC | [app + governance](evidence/05_app_and_governance.md) | app RUNNING; 5 PHI/PII column masks + LOB row filter, verified via `information_schema` |
+
+### Governance is real, not asserted (actual DDL from [`src/notebooks/setup_uc_governance.py`](src/notebooks/setup_uc_governance.py))
+
+```sql
+CREATE OR REPLACE FUNCTION {cat}.governance.mask_ssn(ssn_val STRING)
+RETURNS STRING
+RETURN CASE
+    WHEN is_account_group_member('phi_full_access') THEN ssn_val   -- authorized: clear
+    ELSE 'XXX-XX-' || substr(ssn_val, -4)                          -- everyone else: masked
+  END;
+-- applied with: ALTER TABLE … ALTER COLUMN ssn_last_4 SET MASK {cat}.governance.mask_ssn;
+-- + a row filter on silver_enrollment scoping rows by line-of-business.
+```
+
+### Code tour — every claim in the deck maps to an inspectable file
+
+| Claim | File |
+|---|---|
+| Bronze→silver→gold medallion + DQ expectations | [`src/pipelines/fwa/{bronze,silver,gold}.sql`](src/pipelines/fwa/) |
+| Column masks + row filters | [`src/notebooks/setup_uc_governance.py`](src/notebooks/setup_uc_governance.py) |
+| XGBoost training → MLflow → Unity Catalog | [`src/notebooks/train_fwa_model.py`](src/notebooks/train_fwa_model.py) |
+| Multi-agent supervisor (Genie + policy-RAG fan-out) | [`src/agents/fwa_supervisor_agent.py`](src/agents/fwa_supervisor_agent.py) |
+| Genie space definition | [`config/genie_fwa_setup.py`](config/genie_fwa_setup.py) |
+| Lakebase operational schema (cases/evidence/audit) | [`src/fwa_lakebase_schema.sql`](src/fwa_lakebase_schema.sql) |
+| The one-shot job DAG | [`resources/fwa_fe_bar_job.yml`](resources/fwa_fe_bar_job.yml) |
+
+---
+
 ## The business problem
 
 Fraud, waste, and abuse consume an estimated **3–10% of U.S. healthcare claims spend** (NHCAA/CMS).
